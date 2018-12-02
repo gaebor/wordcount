@@ -1,8 +1,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 
-size_t hash_function(const char* str)
+size_t dummy_hash(const char* str)
 {
 	size_t h = 0;
 	for (; *str; str += sizeof(size_t))
@@ -11,6 +12,18 @@ size_t hash_function(const char* str)
 	}
 	return h;
 }
+size_t hash_FNV1a(const char* _First)
+{
+	size_t _Val = 14695981039346656037ULL;
+	for (; *_First; ++_First)
+	{
+		_Val ^= (size_t)(*_First);
+		_Val *= 1099511628211ULL;
+	}
+	return _Val;
+}
+
+size_t (*hash_function)(const char*) = hash_FNV1a;
 
 typedef struct REC
 {
@@ -20,16 +33,16 @@ typedef struct REC
 
 size_t hash_table_size = 4096, actual_hash_size = 0;
 hash_rec* hash_table;
-double rehash_constant = 0.8f;
-double expand_constant = 1.5f;
+double rehash_constant = 0.8;
+double expand_constant = 2.0;
 
 void rehash()
 {
-	hash_rec* what, *new_place;
-	const size_t new_table_size = (size_t)(expand_constant*hash_table_size);
-	size_t new_hash_val;
+	hash_rec* what;
+	const size_t new_table_size = ceil(expand_constant*hash_table_size);
+	size_t new_hash_val, i;
 	hash_rec* new_table = calloc(new_table_size, sizeof(hash_rec));
-
+	
 	if (new_table == NULL)
 	{
 		fprintf(stderr, "Unable to allocate %g byte memory for rehash!\n", (double)(new_table_size*sizeof(hash_rec)));
@@ -39,24 +52,16 @@ void rehash()
 		if (what->str)
 		{
 			new_hash_val = hash_function(what->str) % new_table_size;
-			for (new_place = new_table + new_hash_val; new_place < new_table + new_table_size; ++new_place)
-			{
-				if (new_place->str == NULL)
+            i = new_hash_val;
+			do {
+				if (new_table[i].str == NULL)
 				{
-					*new_place = *what;
+					new_table[i] = *what;
 					break;
 				}
-			}
-			if (new_place == new_table + new_table_size) // start from the beginning
-				for (new_place = new_table; new_place < new_table + new_hash_val; ++new_place)
-				{
-					if (new_place->str == NULL)
-					{
-						*new_place = *what;
-						break;
-					}
-				}
-		}
+                i = (i+1) % new_table_size;
+			} while(i != new_hash_val);
+		} 
 	hash_table_size = new_table_size;
 	free(hash_table);
 	hash_table = new_table;
@@ -64,10 +69,12 @@ void rehash()
 
 void hash_insert(const char* str, size_t len)
 {
-	hash_rec* const supposed_to_be = hash_table + (hash_function(str) % hash_table_size);
-	hash_rec* where, * const end = hash_table + hash_table_size;
-	for (where = supposed_to_be; where < end; ++where)
+	const size_t supposed_to_be = hash_function(str) % hash_table_size;
+	hash_rec* where;
+    size_t i = supposed_to_be;
+	do
 	{
+        where = hash_table + i;
 		if (where->str == NULL)
 		{
 			where->str = calloc(len + sizeof(size_t), sizeof(char));
@@ -81,24 +88,8 @@ void hash_insert(const char* str, size_t len)
 			++(where->count);
 			return;
 		}
-	}
-	for (where = hash_table; where < supposed_to_be; ++where)
-	{
-		// try the same from the beginning
-		if (where->str == NULL)
-		{
-			where->str = calloc(len + sizeof(size_t), sizeof(char));
-			memcpy(where->str, str, len + sizeof(size_t));
-			where->count = 1;
-			++actual_hash_size;
-			return;
-		}
-		else if (strcmp(where->str, str) == 0)
-		{
-			++(where->count);
-			return;
-		}
-	}
+        i = (i+1) % hash_table_size;
+	} while(i != supposed_to_be);
 }
 
 int comparator(const void* left, const void* right)
@@ -126,28 +117,33 @@ int main(int argc, char* argv[])
 			printf("Simple word counting application, author: borbely@math.bme.hu\nUSAGE: %s [options] < your.favorite.text.txt > words.and.counts.txt\n", program_name);
 			printf("\t-m --max\tsets maximum word length, default: %d\n", MAX_WORD_LENGTH);
 			printf("\t-h --help\tshow this help and exit\n");
+			printf("\t-d --dummy\tuses a dummy hash function, default is %s\n", hash_function == hash_FNV1a ? "FNV-1a" : "dummy");
 			printf("\t-r --rehash\tdetermines the fraction above which a rehash is performed, default: %g\n", rehash_constant);
 			printf("\t-e --expand\tthe fraction determining how much more space is allocated during a rehash, default: %g\n", expand_constant);
 			printf("\t-n --initial\tinitial hash table size, default: %d\n", (int)hash_table_size);
 			exit(0);
 		}
-		else if (strcmp("-r", *argv) == 0 || strcmp("--rehash", *argv) == 0)
+		else if ((strcmp("-r", *argv) == 0 || strcmp("--rehash", *argv) == 0) && *(argv+1))
 		{
 			rehash_constant = atof(*++argv);
 			rehash_constant = rehash_constant < 1.0 && rehash_constant > 0.0 ? rehash_constant : 0.8;
 		}
-		else if (strcmp("-e", *argv) == 0 || strcmp("--expand", *argv) == 0)
+		else if ((strcmp("-e", *argv) == 0 || strcmp("--expand", *argv) == 0) && *(argv+1))
 		{
 			expand_constant = atof(*++argv);
 			expand_constant = expand_constant > 1.0 ? expand_constant : 1.5;
 		}
-		else if (strcmp("-n", *argv) == 0 || strcmp("--initial", *argv) == 0)
+		else if ((strcmp("-n", *argv) == 0 || strcmp("--initial", *argv) == 0) && *(argv+1))
 		{
 			hash_table_size = atoi(*++argv) < 1 ? 1 : (size_t)atoi(*argv);
 		}
-		else if (strcmp("-m", *argv) == 0 || strcmp("--max", *argv) == 0)
+		else if ((strcmp("-m", *argv) == 0 || strcmp("--max", *argv) == 0) && *(argv+1))
 		{
 			MAX_WORD_LENGTH = atoi(*++argv) < 1 ? 1 : (size_t)atoi(*argv);
+		}
+		else if (strcmp("-d", *argv) == 0 || strcmp("--dummy", *argv) == 0)
+		{
+			hash_function = dummy_hash;
 		}
 	}
 
