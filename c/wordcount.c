@@ -2,12 +2,12 @@
 #include <stdlib.h>
 #include <string.h>
 
-size_t hash_function(const char* str, size_t len)
+size_t hash_function(const char* str)
 {
-	size_t h = 0,i;
-	for (i = 0; i < len; i += sizeof(size_t))
+	size_t h = 0;
+	for (; *str; str += sizeof(size_t))
 	{
-		h += *((size_t*)(str + i)); //modulo is taken via unsigned integer overflow!
+		h += *((size_t*)str); //modulo is taken via unsigned integer overflow!
 	}
 	return h;
 }
@@ -38,7 +38,7 @@ void rehash()
 	for (what = hash_table; what < hash_table + hash_table_size; ++what)
 		if (what->str)
 		{
-			new_hash_val = hash_function(what->str, strlen(what->str)) % new_table_size;
+			new_hash_val = hash_function(what->str) % new_table_size;
 			for (new_place = new_table + new_hash_val; new_place < new_table + new_table_size; ++new_place)
 			{
 				if (new_place->str == NULL)
@@ -64,7 +64,7 @@ void rehash()
 
 void hash_insert(const char* str, size_t len)
 {
-	hash_rec* const supposed_to_be = hash_table + (hash_function(str, len) % hash_table_size);
+	hash_rec* const supposed_to_be = hash_table + (hash_function(str) % hash_table_size);
 	hash_rec* where, * const end = hash_table + hash_table_size;
 	for (where = supposed_to_be; where < end; ++where)
 	{
