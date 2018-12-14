@@ -3,16 +3,7 @@
 #include <string.h>
 #include <math.h>
 
-size_t dummy_hash(const char* str)
-{
-	size_t h = 0;
-	for (; *str; str += sizeof(size_t))
-	{
-		h += *((size_t*)str); //modulo is taken via unsigned integer overflow!
-	}
-	return h;
-}
-size_t hash_FNV1a(const char* _First)
+static size_t hash_function(const char* _First)
 {
 	size_t _Val = 14695981039346656037ULL;
 	for (; *_First; ++_First)
@@ -22,8 +13,6 @@ size_t hash_FNV1a(const char* _First)
 	}
 	return _Val;
 }
-
-size_t (*hash_function)(const char*) = hash_FNV1a;
 
 typedef struct REC
 {
@@ -77,8 +66,13 @@ void hash_insert(const char* str, size_t len)
         where = hash_table + i;
 		if (where->str == NULL)
 		{
-			where->str = calloc(len + sizeof(size_t), sizeof(char));
-			memcpy(where->str, str, len + sizeof(size_t));
+			where->str = malloc(len + 1);
+            if (where->str == NULL)
+            {
+                fprintf(stderr, "Unable to allocate %g bytes for string\n", (double)(len+1));
+                exit(1);
+            }
+			memcpy(where->str, str, len + 1);
 			where->count = 1;
 			++actual_hash_size;
 			return;
@@ -92,9 +86,9 @@ void hash_insert(const char* str, size_t len)
 	} while(i != supposed_to_be);
 }
 
-int comparator(const void* left, const void* right)
+static int comparator(const void* left, const void* right)
 {
-	hash_rec* const l = *(hash_rec**)left, * const r = *(hash_rec**)right;
+	hash_rec* const l = (hash_rec*)left, * const r = (hash_rec*)right;
 	return (l->count > r->count) ? -1 : (l->count == r->count ? strcmp(l->str, r->str) : 1);
 }
 
@@ -102,12 +96,33 @@ char* word;
 char input_format[100];
 int MAX_WORD_LENGTH = 1000;
 
+static void partition(hash_rec* _First, hash_rec* _Last)
+{
+    hash_rec temp;
+    for (; ; ++_First)
+    {   // find any out-of-order pair
+        for (; _First != _Last && _First->count > 0; ++_First)
+          ;   // skip in-place elements at beginning
+        if (_First == _Last)
+          break;  // done
+
+        for (; _First != --_Last && _Last->count == 0; )
+          ;   // skip in-place elements at end
+        if (_First == _Last)
+          break;  // done
+
+        temp = *_First;
+        *_First = *_Last;
+        *_Last = temp;
+    }
+}
+
 int main(int argc, char* argv[])
 {
 	const char* output_format = (sizeof(size_t) == sizeof(long long) ? "%s\t%llu\n" : "%s\t%u\n");
 
 	size_t len;
-	hash_rec* hash_ptr, **sorted_table;
+	hash_rec* hash_ptr;
 	char* const program_name = argv[0];
 
 	for (++argv; *argv; ++argv)
@@ -117,7 +132,7 @@ int main(int argc, char* argv[])
 			printf("Simple word counting application, author: borbely@math.bme.hu\nUSAGE: %s [options] < your.favorite.text.txt > words.and.counts.txt\n", program_name);
 			printf("\t-m --max\tsets maximum word length, default: %d\n", MAX_WORD_LENGTH);
 			printf("\t-h --help\tshow this help and exit\n");
-			printf("\t-d --dummy\tuses a dummy hash function, default is %s\n", hash_function == hash_FNV1a ? "FNV-1a" : "dummy");
+			// printf("\t-d --dummy\tuses a dummy hash function, default is %s\n", hash_function == hash_FNV1a ? "FNV-1a" : "dummy");
 			printf("\t-r --rehash\tdetermines the fraction above which a rehash is performed, default: %g\n", rehash_constant);
 			printf("\t-e --expand\tthe fraction determining how much more space is allocated during a rehash, default: %g\n", expand_constant);
 			printf("\t-n --initial\tinitial hash table size, default: %d\n", (int)hash_table_size);
@@ -141,10 +156,10 @@ int main(int argc, char* argv[])
 		{
 			MAX_WORD_LENGTH = atoi(*++argv) < 1 ? 1 : (size_t)atoi(*argv);
 		}
-		else if (strcmp("-d", *argv) == 0 || strcmp("--dummy", *argv) == 0)
-		{
-			hash_function = dummy_hash;
-		}
+		// else if (strcmp("-d", *argv) == 0 || strcmp("--dummy", *argv) == 0)
+		// {
+			// hash_function = dummy_hash;
+		// }
 	}
 
 	word = malloc(sizeof(char)*(MAX_WORD_LENGTH + sizeof(size_t)));
@@ -161,7 +176,6 @@ int main(int argc, char* argv[])
 	while (scanf(input_format, word) == 1)
 	{
 		len = strlen(word);
-		*((size_t*)(word + len)) = 0;
 		hash_insert(word, len);
 		if (actual_hash_size > rehash_constant*hash_table_size)
 			rehash();
@@ -172,22 +186,12 @@ int main(int argc, char* argv[])
 		return 1;
 	}
 
-	sorted_table = malloc(actual_hash_size*sizeof(hash_rec*));
-	if (sorted_table == NULL)
-	{
-		fprintf(stderr, "Unable to allocate %g byte for sorted array!\n", (double)(actual_hash_size*sizeof(hash_rec*)));
-		return 1;
-	}
-	len = 0;
-	for (hash_ptr = hash_table; hash_ptr < hash_table + hash_table_size; ++hash_ptr)
-	{
-		if (hash_ptr->str)
-			sorted_table[len++] = hash_ptr;
-	}
-	qsort(sorted_table, actual_hash_size, sizeof(hash_rec*), comparator);
-
-	for (len = 0; len < actual_hash_size; ++len)
-		printf(output_format, sorted_table[len]->str, sorted_table[len]->count);
+    partition(hash_table, hash_table + hash_table_size);
+	qsort(hash_table, actual_hash_size, sizeof(hash_rec), comparator);
+    hash_ptr = hash_table + actual_hash_size;
+    --hash_table;
+	while (++hash_table < hash_ptr)
+		printf(output_format, hash_table->str, hash_table->count);
 
 	return 0;
 }
