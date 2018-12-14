@@ -61,18 +61,19 @@ void hash_insert(const char* str, size_t len)
 	const size_t supposed_to_be = hash_function(str) % hash_table_size;
 	hash_rec* where;
     size_t i = supposed_to_be;
+    ++len; // size in memory, not string size
 	do
 	{
         where = hash_table + i;
 		if (where->str == NULL)
 		{
-			where->str = malloc(len + 1);
+			where->str = malloc(len);
             if (where->str == NULL)
             {
-                fprintf(stderr, "Unable to allocate %g bytes for string\n", (double)(len+1));
+                fprintf(stderr, "Unable to allocate %g bytes for string\n", (double)len);
                 exit(1);
             }
-			memcpy(where->str, str, len + 1);
+			memcpy(where->str, str, len);
 			where->count = 1;
 			++actual_hash_size;
 			return;
@@ -92,9 +93,8 @@ static int comparator(const void* left, const void* right)
 	return (l->count > r->count) ? -1 : (l->count == r->count ? strcmp(l->str, r->str) : 1);
 }
 
-char* word;
-char input_format[100];
-int MAX_WORD_LENGTH = 1000;
+char* buffer;
+size_t buffer_size = 1 << 16; // 64k
 
 static void partition(hash_rec* _First, hash_rec* _Last)
 {
@@ -117,25 +117,39 @@ static void partition(hash_rec* _First, hash_rec* _Last)
     }
 }
 
+typedef enum
+{
+    IN_WORD = 0,
+    IN_SPACE = 1,
+} State;
+
+typedef enum
+{
+    WORD_CHR = 0,
+    SPACE_CHR = 2,
+} CharType;
+
+const char* const output_format = (sizeof(size_t) == sizeof(long long) ? "%s\t%llu\n" : "%s\t%u\n");
+
 int main(int argc, char* argv[])
 {
-	const char* output_format = (sizeof(size_t) == sizeof(long long) ? "%s\t%llu\n" : "%s\t%u\n");
-
-	size_t len;
+    CharType chartype;
+    State state = IN_SPACE;
+    
+	size_t len, allocated_buffer_size;
 	hash_rec* hash_ptr;
 	char* const program_name = argv[0];
-
+    char *buffer_pos, *buffer_end, *word_pos, *new_buffer;
 	for (++argv; *argv; ++argv)
 	{
 		if (strcmp("-h", *argv) == 0 || strcmp("--help", *argv) == 0)
 		{
 			printf("Simple word counting application, author: borbely@math.bme.hu\nUSAGE: %s [options] < your.favorite.text.txt > words.and.counts.txt\n", program_name);
-			printf("\t-m --max\tsets maximum word length, default: %d\n", MAX_WORD_LENGTH);
-			printf("\t-h --help\tshow this help and exit\n");
-			// printf("\t-d --dummy\tuses a dummy hash function, default is %s\n", hash_function == hash_FNV1a ? "FNV-1a" : "dummy");
-			printf("\t-r --rehash\tdetermines the fraction above which a rehash is performed, default: %g\n", rehash_constant);
-			printf("\t-e --expand\tthe fraction determining how much more space is allocated during a rehash, default: %g\n", expand_constant);
-			printf("\t-n --initial\tinitial hash table size, default: %d\n", (int)hash_table_size);
+			printf("	-b --buffer	sets buffer size, default: %llu\n", (unsigned long long)buffer_size);
+			printf("	-h --help	show this help and exit\n");
+			printf("	-r --rehash	determines the fraction above which a rehash is performed, default: %g\n", rehash_constant);
+			printf("	-e --expand	the fraction determining how much more space is allocated during a rehash, default: %g\n", expand_constant);
+			printf("	-n --initial	initial hash table size, default: %d\n", (int)hash_table_size);
 			exit(0);
 		}
 		else if ((strcmp("-r", *argv) == 0 || strcmp("--rehash", *argv) == 0) && *(argv+1))
@@ -152,46 +166,103 @@ int main(int argc, char* argv[])
 		{
 			hash_table_size = atoi(*++argv) < 1 ? 1 : (size_t)atoi(*argv);
 		}
-		else if ((strcmp("-m", *argv) == 0 || strcmp("--max", *argv) == 0) && *(argv+1))
+		else if ((strcmp("-b", *argv) == 0 || strcmp("--buffer", *argv) == 0) && *(argv+1))
 		{
-			MAX_WORD_LENGTH = atoi(*++argv) < 1 ? 1 : (size_t)atoi(*argv);
+			buffer_size = atoll(*++argv) < 1 ? 1 : (size_t)atoll(*argv);
 		}
-		// else if (strcmp("-d", *argv) == 0 || strcmp("--dummy", *argv) == 0)
-		// {
-			// hash_function = dummy_hash;
-		// }
 	}
 
-	word = malloc(sizeof(char)*(MAX_WORD_LENGTH + sizeof(size_t)));
-	if (word == NULL)
+	buffer = malloc(buffer_size);
+	if (buffer == NULL)
 	{
-		fprintf(stderr, "Unable to allocate %g bytes\n", (double)(sizeof(char)*(MAX_WORD_LENGTH + sizeof(size_t))));
+		fprintf(stderr, "Unable to allocate %g bytes for buffer\n", (double)(buffer_size));
 		return 1;
 	}
+    allocated_buffer_size = buffer_size;
+    buffer_pos = buffer;
 
-	hash_table = calloc(hash_table_size, sizeof(hash_rec));
+    hash_table = calloc(hash_table_size, sizeof(hash_rec));
 
-	sprintf(input_format, "%%%ds", MAX_WORD_LENGTH);
-
-	while (scanf(input_format, word) == 1)
-	{
-		len = strlen(word);
-		hash_insert(word, len);
-		if (actual_hash_size > rehash_constant*hash_table_size)
-			rehash();
-	}
-	if (!feof(stdin))
-	{
-		fprintf(stderr, "scanf failed before eof\n");
-		return 1;
-	}
+    while (0 < (len = fread(buffer_pos, 1, buffer_size, stdin)))
+    {   // process buffer
+        buffer_end = buffer_pos + len;
+        
+        for (word_pos = buffer; buffer_pos < buffer_end; ++buffer_pos)
+        {   // process word
+            switch(*buffer_pos)
+            {
+                case ' ':
+                case '\t':
+                case '\n':
+                case '\r':
+                case '\v':
+                case '\f':
+                    chartype = SPACE_CHR;
+                break;
+                default:
+                    chartype = WORD_CHR;
+            }
+            switch(chartype + state)
+            {
+                case (IN_WORD + SPACE_CHR):
+                {
+                    *buffer_pos = '\0';
+                    len = buffer_pos - word_pos;
+                    hash_insert(word_pos, len);
+                    if (actual_hash_size > rehash_constant*hash_table_size)
+                        rehash();
+                    state = IN_SPACE;
+                }break;
+                case (IN_SPACE + WORD_CHR):
+                {
+                    word_pos = buffer_pos;
+                    state = IN_WORD;
+                }break;
+                default: break;
+            }
+        }
+        // take care of the end chunk
+        switch (state)
+        {
+            case IN_WORD: // leftovers
+                len = buffer_end - word_pos;
+                if (len + buffer_size > allocated_buffer_size)
+                {
+                    if (NULL != (new_buffer = malloc(len + buffer_size)))
+                    {
+                        allocated_buffer_size = len + buffer_size;
+                        memcpy(new_buffer, word_pos, len);
+                        free(buffer);
+                        buffer = new_buffer;
+                    }
+                    else
+                    {
+                        fprintf(stderr, "unable t allocate %g bytes!\n", (double)(len + buffer_size));
+                        return 1;
+                    }
+                }else
+                {
+                    memcpy(buffer, word_pos, len);
+                }
+                buffer_pos = buffer + len;
+            break;
+            case IN_SPACE: // clean finish
+                buffer_pos = buffer;
+            break;
+        }
+    }
+    if (!feof(stdin))
+    {
+        fprintf(stderr, "fread failed before eof\n");
+        return 1;
+    }
 
     partition(hash_table, hash_table + hash_table_size);
-	qsort(hash_table, actual_hash_size, sizeof(hash_rec), comparator);
+    qsort(hash_table, actual_hash_size, sizeof(hash_rec), comparator);
     hash_ptr = hash_table + actual_hash_size;
     --hash_table;
-	while (++hash_table < hash_ptr)
-		printf(output_format, hash_table->str, hash_table->count);
+    while (++hash_table < hash_ptr)
+        printf(output_format, hash_table->str, hash_table->count);
 
-	return 0;
+    return 0;
 }
